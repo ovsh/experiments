@@ -2,6 +2,7 @@
 # TODO: Force a min height but also a min width. Area needs to be *portrait* or close to it. Not slim.
 
 
+import random
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -9,30 +10,40 @@ import torch
 from shapely.geometry import Polygon
 
 # Load YOLOv5 model
-# model = torch.hub.load('ultralytics/yolov5', 'yolov5s')
+model = torch.hub.load('ultralytics/yolov5', 'yolov5s')
 
 # Load the image
+# img = cv2.imread('image.jpeg')
 img = cv2.imread('6.png')
 final_img = img.copy()
 
 # # Perform object detection on the image
-# results = model(img)
-# res = results.pandas().xyxy[0]
+results = model(img)
+res = results.pandas().xyxy[0]
 
-# for obj in results.xyxy[0]:
-#     x1, y1, x2, y2, conf, cls = obj[:6]
-#     label = model.names[int(cls)]
-#     print(
-#         f'Found {label} with confidence {conf:.2f} at ({x1:.0f}, {y1:.0f}) - ({x2:.0f}, {y2:.0f})')
-#     # Remove the detected objects from the image by drawing a black rectangle around them
-#     cv2.rectangle(img, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 0), -1)
+for obj in results.xyxy[0]:
+    x1, y1, x2, y2, conf, cls = obj[:6]
+    label = model.names[int(cls)]
+    print(
+        f'Found {label} with confidence {conf:.2f} at ({x1:.0f}, {y1:.0f}) - ({x2:.0f}, {y2:.0f})')
+    # Remove the detected objects from the image by drawing a black rectangle around them
+    cv2.rectangle(img, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 0), -1)
 
 # Load the image
 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+# cv2.imshow('img', img)
+# cv2.waitKey(0)
+
 
 # Perform adaptive thresholding to obtain a binary image
-adaptive_thresh = cv2.adaptiveThreshold(
-    gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 15, 8)
+block_size = 9
+constant = 3
+adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+                                        cv2.THRESH_BINARY, block_size, constant)
+
+# Create a binary mask to initialize the GrabCut algorithm
+mask = np.zeros(img.shape[:2], np.uint8)
+
 
 # Find contours in the binary image
 contours, _ = cv2.findContours(
@@ -172,8 +183,8 @@ def find_top_k_rectangles(final_img, mask, k, max_zero_percentage=0.0, aspect_ra
                     overlap_area = sum([rect_overlap_area(
                         (x1, y1, x2 - x1 + 1, y2 - y1 + 1), prev_rect) for prev_rect in regions])
                     # Check if the rectangle is at least 50% unique
-                    # if rect_area / (rect_area + overlap_area) < 0.5:
-                    #     continue
+                    if rect_area / (rect_area + overlap_area) < 0.5:
+                        continue
                     regions.append((x1, y1, x2 - x1 + 1, y2 - y1 + 1))
 
     # Sort the regions by area in descending order
@@ -200,105 +211,89 @@ def find_top_k_rectangles(final_img, mask, k, max_zero_percentage=0.0, aspect_ra
     return coords
 
 
-def is_eligible_top_k_rectangle(mask, coords, max_zero_percentage=0.00, aspect_ratio_threshold=1):
-    # Extract the coordinates of the rectangle
-    x1, y1, x2, y2 = coords
-
-    # Check if any pixel within the rectangle has a value of 0 in the original binary mask
-    rect_mask = mask[y1:y2+1, x1:x2+1]
-    zero_count = np.count_nonzero(rect_mask == 0)
-    rect_size = rect_mask.size
-    if zero_count / rect_size > max_zero_percentage:
-        # If the percentage of pixels with a value of 0 in the rectangle exceeds the maximum allowed value,
-        # highlight the problematic pixels in red and return False
-        rect_mask[rect_mask == 0] = 128
-        rect_mask[rect_mask == 255] = 0
-        return False
-
-    # Compute the area and aspect ratio of the rectangle
-    rect_area = (x2 - x1 + 1) * (y2 - y1 + 1)
-    aspect_ratio = (x2 - x1 + 1) / (y2 - y1 + 1)
-
-    # Check if the aspect ratio of the rectangle exceeds the threshold or is below the minimum value
-    if aspect_ratio > aspect_ratio_threshold or aspect_ratio < 1/aspect_ratio_threshold:
-        # If the aspect ratio is outside the allowed range, highlight the rectangle in blue and return False
-        rect_mask[rect_mask == 0] = 128
-        rect_mask[rect_mask == 255] = 0
-        return False
-
-    # If the rectangle is eligible, return True
-    return True
-
-
-def find_top_k_rectangles_both(final_img, mask, k, aspect_ratio_threshold=4, max_zero_percentage=0.15):
-    def get_regions(axis):
-        regions = []
-        start = None
-        for i in range(mask.shape[axis]):
-            indices = [i, slice(None)] if axis == 0 else [slice(None), i]
-            if np.any(mask[indices] == 255):
-                if start is None:
-                    start = i
-            elif start is not None:
-                regions.append((start, i - 1))
-                start = None
-        if start is not None:
-            regions.append((start, mask.shape[axis] - 1))
-        return regions
-
-    row_regions = get_regions(0)
-    col_regions = get_regions(1)
-
+def find_top_k_rectangles_new(final_img, mask, k, max_zero_percentage=0.0, aspect_ratio_threshold=4):
     regions = []
-    for y, row in enumerate(row_regions):
-        for x1, x2 in row:
-            for y1, y2 in col_regions:
-                if y1 <= y <= y2:
-                    # Check if any pixel within the rectangle has a value of 0 in the original binary mask
-                    if np.sum(mask[y1:y2+1, x1:x2+1] == 0) / ((y2 - y1 + 1) * (x2 - x1 + 1)) > max_zero_percentage:
-                        continue
-                    # Compute the area and aspect ratio of the rectangle
-                    rect_area = (x2 - x1 + 1) * (y2 - y1 + 1)
-                    aspect_ratio = (x2 - x1 + 1) / (y2 - y1 + 1)
-                    # Filter out rectangles with aspect ratio above the threshold or below a minimum value
-                    if aspect_ratio > aspect_ratio_threshold or aspect_ratio < 1/aspect_ratio_threshold:
-                        continue
-                    regions.append((x1, y1, x2 - x1 + 1, y2 - y1 + 1))
+    image_size = mask.shape[0] * mask.shape[1]
 
-                    # Compute the area of the rectangle and its union with previously selected rectangles
-                    rect_area = (x2 - x1 + 1) * (y2 - y1 + 1)
-                    overlap_area = sum([rect_overlap_area(
-                        (x1, y1, x2 - x1 + 1, y2 - y1 + 1), prev_rect) for prev_rect in regions])
-                    # Check if the rectangle is at least 50% unique
-                    if rect_area / (rect_area + overlap_area) < 0.5:
-                        continue
-                    regions.append((x1, y1, x2 - x1 + 1, y2 - y1 + 1))
+    # Expand from a random starting point
+    def expand_from_point(x, y):
+        left, right = x, x
+        while left > 0 and mask[y, left-1] == 255:
+            left -= 1
+        while right < mask.shape[1]-1 and mask[y, right+1] == 255:
+            right += 1
+        top, bottom = y, y
+        while top > 0 and mask[top-1, x] == 255:
+            top -= 1
+        while bottom < mask.shape[0]-1 and mask[bottom+1, x] == 255:
+            bottom += 1
+        return (left, top, right-left+1, bottom-top+1)
+
+    # Binary search to find the largest rectangle from a starting point
+    def find_largest_rect(x, y):
+        best_rect = expand_from_point(x, y)
+        max_width = min(best_rect[2], best_rect[3]*aspect_ratio_threshold)
+        min_width = max(1, best_rect[3]/aspect_ratio_threshold)
+        while max_width >= min_width:
+            width = (max_width + min_width) // 2
+            height = width / aspect_ratio_threshold
+            rect = expand_from_point(x, y)
+            if rect[2] < width or rect[3] < height:
+                max_width = width - 1
+            else:
+                best_rect = rect
+                min_width = width + 1
+        return best_rect
+
+    # Iterate over the entire image
+    for i in range(300):
+        if len(regions) >= k:
+            break
+        x, y = random.randint(
+            0, mask.shape[1]-1), random.randint(0, mask.shape[0]-1)
+        if mask[y, x] == 255:
+            rect = find_largest_rect(x, y)
+            # Check if any pixel within the candidate rectangle has a value of 0 in the original binary mask
+            if np.sum(mask[rect[1]:rect[1]+rect[3], rect[0]:rect[0]+rect[2]] == 0) / (rect[2] * rect[3]) > max_zero_percentage:
+                continue
+            # Filter out rectangles with aspect ratio above the threshold or below a minimum value
+            aspect_ratio = rect[2] / rect[3]
+            if aspect_ratio > aspect_ratio_threshold or aspect_ratio < 1/aspect_ratio_threshold:
+                continue
+            # Compute the area of the rectangle and its union with previously selected rectangles
+            overlap_area = sum([rect_overlap_area(
+                rect, prev_rect) for prev_rect in regions])
+            if overlap_area > 0.5 * rect[2] * rect[3]:
+                continue
+            regions.append(rect)
 
     # Sort the regions by area in descending order
     regions = sorted(
         regions, key=lambda region: region[2] * region[3], reverse=True)
 
     # Keep the top k regions
-    top_k_regions = []
+    unique_regions = []
     for region in regions:
-        if not any(rect_overlap_area(region, prev_rect) >= 0.5 * min(region[2] * region[3], prev_rect[2] * prev_rect[3]) for prev_rect in top_k_regions):
-            top_k_regions.append(region)
-        if len(top_k_regions) >= k:
+        if not any(rect_overlap_area(region, prev_rect) >= 0.5 * min(region[2] * region[3], prev_rect[2] * prev_rect[3]) for prev_rect in unique_regions):
+            unique_regions.append(region)
+        if len(unique_regions) == k:
             break
 
-        # Draw rectangles around the top k regions
-    for x, y, w, h in top_k_regions:
-        cv2.rectangle(final_img, (x, y), (x + w - 1,
-                      y + h - 1), (255, 255, 255), 2)
+    # Draw rectangles around the top k regions
+    for x, y, w, h in unique_regions:
+        cv2.rectangle(final_img, (x, y), (x + w - 1, y + h - 1), (0, 0, 0), 2)
 
     # Get the x, y coordinates of the top k regions
-    coords = [(x, y) for x, y, _, _ in top_k_regions]
+    coords = [(x, y) for x, y, _, _ in unique_regions]
 
-    return top_k_regions
+    return coords
 
 
 # Find the top 5 largest rectangular regions not covered by the bounding boxes
-coords = find_top_k_rectangles(final_img, ~mask, 3, aspect_ratio_threshold=6, max_zero_percentage=0.0)
+# coords = find_top_k_rectangles(
+#     final_img, ~mask, 5, aspect_ratio_threshold=2, max_zero_percentage=0.0)
+coords = find_top_k_rectangles_new(
+    final_img, ~mask, 5, aspect_ratio_threshold=3, max_zero_percentage=0.0)
 # coords = 0, 0, 500, 250
 # res = is_eligible_top_k_rectangle(~mask, coords)
 print("coordinates of top 5 largest rectangular regions not covered by the bounding boxes:", coords)
