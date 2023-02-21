@@ -2,81 +2,15 @@
 # TODO: Force a min height but also a min width. Area needs to be *portrait* or close to it. Not slim.
 
 
+import matplotlib.pyplot as plt
+import math
+import keras_ocr
 import random
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import torch
 from shapely.geometry import Polygon
-
-# Load YOLOv5 model
-model = torch.hub.load('ultralytics/yolov5', 'yolov5s')
-
-# Load the image
-# img = cv2.imread('image.jpeg')
-img = cv2.imread('6.png')
-final_img = img.copy()
-
-# # Perform object detection on the image
-results = model(img)
-res = results.pandas().xyxy[0]
-
-for obj in results.xyxy[0]:
-    x1, y1, x2, y2, conf, cls = obj[:6]
-    label = model.names[int(cls)]
-    print(
-        f'Found {label} with confidence {conf:.2f} at ({x1:.0f}, {y1:.0f}) - ({x2:.0f}, {y2:.0f})')
-    # Remove the detected objects from the image by drawing a black rectangle around them
-    cv2.rectangle(img, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 0), -1)
-
-# Load the image
-gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-# cv2.imshow('img', img)
-# cv2.waitKey(0)
-
-
-# Perform adaptive thresholding to obtain a binary image
-block_size = 9
-constant = 3
-adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
-                                        cv2.THRESH_BINARY, block_size, constant)
-
-# Create a binary mask to initialize the GrabCut algorithm
-mask = np.zeros(img.shape[:2], np.uint8)
-
-
-# Find contours in the binary image
-contours, _ = cv2.findContours(
-    adaptive_thresh, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-
-# Find the top 5 largest contours in the image
-contours = sorted(contours, key=lambda x: cv2.contourArea(x),
-                  reverse=True)[1:6]
-print("number of contours: ", len(contours))
-
-# Find the bounding boxes of the top 5 largest contours in the image
-bounding_boxes = []
-for c in sorted(contours, key=lambda x: cv2.contourArea(x), reverse=True)[:5]:
-    x, y, w, h = cv2.boundingRect(c)
-    bounding_boxes.append((x, y, w, h))
-
-# Draw the top 5 contours on the original image
-for i, c in enumerate(contours):
-    x, y, w, h = cv2.boundingRect(c)
-    print(x, y, w, h)
-    print("size of each contur in image: ", cv2.contourArea(c))
-    cv2.rectangle(img, (x, y), (x + w, y + h), (0, 0, 255), 2)
-    cv2.putText(img, f"#{i+1}", (x, y-5),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-
-# Create a mask that marks the areas covered by the bounding boxes
-mask = np.zeros_like(gray)
-for x, y, w, h in bounding_boxes:
-    cv2.rectangle(mask, (x, y), (x + w, y + h), 255, -1)
-
-# show mask image
-# cv2.imshow("mask", ~mask)
-# cv2.waitKey(0)
 
 
 def rect_overlap_area(rect1, rect2):
@@ -211,6 +145,139 @@ def find_top_k_rectangles(final_img, mask, k, max_zero_percentage=0.0, aspect_ra
     return coords
 
 
+def add_text_to_image(text, raw_img, coords, padding=0.95, centered=True, split_lines=True):
+    # Convert the input image to the PIL format
+    raw_img = cv2.convertScaleAbs(raw_img)
+    img = Image.fromarray(cv2.cvtColor(raw_img, cv2.COLOR_BGR2RGB))
+
+    # Create a drawing context
+    draw = ImageDraw.Draw(img)
+
+    # Get the size of the bounding box
+    x1, y1, x2, y2 = map(int, coords)
+    width, height = x2 - x1, y2 - y1
+
+    # Calculate the maximum font size
+    font_size = 1
+    font = ImageFont.truetype("arial.ttf", font_size)
+
+    # Calculate the maximum font size for single line text
+    while font.getlength(text) < padding * width and font.getbbox(text)[3] - font.getbbox(text)[1] < padding * height:
+        font_size += 1
+        font = ImageFont.truetype("arial.ttf", font_size)
+    # font_size -= 1  # shrink font once because it exceeded the bounding box that we set in the above loop
+
+    # Calculate the maximum font size for multi-line text
+    if split_lines:
+        # Create the ImageFont object for multi-line text
+        font_size_multi_line = 1
+        font_multi_line = ImageFont.truetype("arial.ttf", font_size_multi_line)
+
+        # Split the text into two lines that fit within the bounding box
+        max_chars_per_line = len(text) // 2  # split text in half
+        while True:
+            # Calculate the size of the first line
+            first_line = text[:max_chars_per_line]
+            first_line_size = font_multi_line.getsize(first_line)
+
+            # Check if the first line fits within the bounding box
+            if first_line_size[0] <= padding * width and first_line_size[1] <= padding * height:
+                # Calculate the size of the second line
+                second_line = text[max_chars_per_line:]
+                second_line_size = font_multi_line.getsize(second_line)
+
+                # Check if the second line fits within the bounding box
+                if second_line_size[0] <= padding * width and second_line_size[1] <= padding * height:
+                    # Both lines fit, so increase font size and continue
+                    font_size_multi_line += 1
+                    font_multi_line = ImageFont.truetype(
+                        "arial.ttf", font_size_multi_line)
+                else:
+                    print('break condition hit. here is the size of the font: {}, the width: {}, and the height: {}'.format(
+                        font_size_multi_line, padding * width, padding * height))
+                    # Second line does not fit, so use previous font size
+                    break
+            else:
+                print('break condition hit. here is the size of the font: {}, the width: {}, and the height: {}'.format(
+                    font_size_multi_line, padding * width, padding * height))
+                # First line does not fit, so use previous font size
+                break
+
+        # Set font size to be the minimum of single line and multi-line font sizes
+        if split_lines:
+            # Set font size to be the minimum of single line and multi-line font sizes
+            font_size = font_size_multi_line - 1
+        else:
+            # Use single-line font size
+            font_size = font_size
+    font = ImageFont.truetype("arial.ttf", font_size)
+
+    if split_lines:
+        # Split the text into two lines if necessary
+        if font.getsize(text)[0] > padding * width:
+            # Find the midpoint of the text and split it into two lines
+            midpoint = len(text) // 2
+            first_line = text[:midpoint].strip()
+            second_line = text[midpoint:].strip()
+
+            # Add the lines to the list of lines
+            lines = [first_line, second_line]
+        else:
+            # Split the text into multiple lines
+            words = text.split()
+            lines = []
+            line = ""
+            for word in words:
+                if font.getlength(line + word) < padding * width:
+                    line += word + " "
+                else:
+                    lines.append(line[:-1])
+                    line = word + " "
+            lines.append(line[:-1])
+    else:
+        # Split the text into multiple lines
+        words = text.split()
+        lines = []
+        line = ""
+        for word in words:
+            if font.getlength(line + word) < padding * width:
+                line += word + " "
+            else:
+                lines.append(line[:-1])
+                line = word + " "
+        lines.append(line[:-1])
+
+    # Calculate the coordinates of the top-left corner of the text
+    if centered:
+        x = x1 + (width - font.getbbox(lines[0])
+                  [2] + font.getbbox(lines[0])[0]) / 2
+        y = y1 + (height - font_size * len(lines)) / 2
+    else:
+        x = x1 + (1-padding)*0.5 * width
+        y = y1 + (1-padding)*0.5 * height
+
+    # Draw the text on the image
+    for line in lines:
+        draw.text((x, y), line, font=font, fill=(255, 255, 255))
+        print("Text drawn at ({}, {}). Text = {}".format(x, y, line))
+        y += font_size
+
+    # Print where you drew the text, including text font size and width and height
+    print("Text drawn at ({}, {})".format(x, y))
+    print("Text font size: {}".format(font_size))
+    print("Text width: {}".format(font.getbbox(
+        lines[0])[2] - font.getbbox(lines[0])[0]))
+
+    # Convert the modified image back to the OpenCV format
+    modified_image = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+
+    # draw a bounding box around the original coords in black and then draw another bounding box around the bounding box of the text in red
+    cv2.rectangle(modified_image, (x1, y1), (x2, y2), (0, 0, 0), 2)
+    # cv2.rectangle(modified_image, (x1, y1), (x2, y2), (0, 0, 255), 1)
+
+    return modified_image
+
+
 def find_top_k_rectangles_new(final_img, mask, k, max_zero_percentage=0.0, aspect_ratio_threshold=4):
     regions = []
     image_size = mask.shape[0] * mask.shape[1]
@@ -283,24 +350,162 @@ def find_top_k_rectangles_new(final_img, mask, k, max_zero_percentage=0.0, aspec
     for x, y, w, h in unique_regions:
         cv2.rectangle(final_img, (x, y), (x + w - 1, y + h - 1), (0, 0, 0), 2)
 
-    # Get the x, y coordinates of the top k regions
-    coords = [(x, y) for x, y, _, _ in unique_regions]
+    # Get the x, y coordinates of the top k regions and print them
+    coords = [(x1, y1, x1 + w, y1 + h) for x1, y1, w, h in unique_regions]
 
     return coords
 
 
+def get_final_img_and_mask(img):
+
+    # # Perform object detection on the image
+    results = model(img)
+    res = results.pandas().xyxy[0]
+
+    for obj in results.xyxy[0]:
+        x1, y1, x2, y2, conf, cls = obj[:6]
+        label = model.names[int(cls)]
+        print(
+            f'Found {label} with confidence {conf:.2f} at ({x1:.0f}, {y1:.0f}) - ({x2:.0f}, {y2:.0f})')
+        # Remove the detected objects from the image by drawing a black rectangle around them
+        cv2.rectangle(img, (int(x1), int(y1)),
+                      (int(x2), int(y2)), (0, 0, 0), -1)
+
+    # Load the image
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # cv2.imshow('img', img)
+    # cv2.waitKey(0)
+
+    # Perform adaptive thresholding to obtain a binary image
+    block_size = 9
+    constant = 3
+    adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+                                            cv2.THRESH_BINARY, block_size, constant)
+
+    # Create a binary mask to initialize the GrabCut algorithm
+    mask = np.zeros(img.shape[:2], np.uint8)
+
+    # Find contours in the binary image
+    contours, _ = cv2.findContours(
+        adaptive_thresh, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Find the top 5 largest contours in the image
+    contours = sorted(contours, key=lambda x: cv2.contourArea(x),
+                      reverse=True)[1:6]
+    print("number of contours: ", len(contours))
+
+    # Find the bounding boxes of the top 5 largest contours in the image
+    bounding_boxes = []
+    for c in sorted(contours, key=lambda x: cv2.contourArea(x), reverse=True)[:5]:
+        x, y, w, h = cv2.boundingRect(c)
+        bounding_boxes.append((x, y, w, h))
+
+    # Draw the top 5 contours on the original image
+    for i, c in enumerate(contours):
+        x, y, w, h = cv2.boundingRect(c)
+        print(x, y, w, h)
+        print("size of each contur in image: ", cv2.contourArea(c))
+        cv2.rectangle(img, (x, y), (x + w, y + h), (0, 0, 255), 2)
+        cv2.putText(img, f"#{i+1}", (x, y-5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
+    # Create a mask that marks the areas covered by the bounding boxes
+    mask = np.zeros_like(gray)
+    for x, y, w, h in bounding_boxes:
+        cv2.rectangle(mask, (x, y), (x + w, y + h), 255, -1)
+
+    return final_img, mask
+
+
+# General Approach.....
+# Use keras OCR to detect text, define a mask around the text, and inpaint the
+# masked regions to remove the text.
+# To apply the mask we need to provide the coordinates of the starting and
+# the ending points of the line, and the thickness of the line
+
+# The start point will be the mid-point between the top-left corner and
+# the bottom-left corner of the box.
+# the end point will be the mid-point between the top-right corner and the bottom-right corner.
+# The following function does exactly that.
+
+
+def midpoint(x1, y1, x2, y2):
+    x_mid = int((x1 + x2)/2)
+    y_mid = int((y1 + y2)/2)
+    return (x_mid, y_mid)
+
+# Main function that detects text and inpaints.
+# Inputs are the image path and kreas_ocr pipeline
+
+
+def inpaint_text(img, pipeline):
+    # read the image
+    # img = keras_ocr.tools.read(img_path)
+
+    # Recogize text (and corresponding regions)
+    # Each list of predictions in prediction_groups is a list of
+    # (word, box) tuples.
+    prediction_groups = pipeline.recognize([img])
+
+    # Define the mask for inpainting
+    mask = np.zeros(img.shape[:2], dtype="uint8")
+    for box in prediction_groups[0]:
+        x0, y0 = box[1][0]
+        x1, y1 = box[1][1]
+        x2, y2 = box[1][2]
+        x3, y3 = box[1][3]
+
+        x_mid0, y_mid0 = midpoint(x1, y1, x2, y2)
+        x_mid1, y_mi1 = midpoint(x0, y0, x3, y3)
+
+        # For the line thickness, we will calculate the length of the line between
+        # the top-left corner and the bottom-left corner.
+        thickness = int(math.sqrt((x2 - x1)**2 + (y2 - y1)**2))
+
+        # Define the line and inpaint
+        cv2.line(mask, (x_mid0, y_mid0), (x_mid1, y_mi1), 255,
+                 thickness)
+        inpainted_img = cv2.inpaint(img, mask, 7, cv2.INPAINT_NS)
+
+    return (inpainted_img)
+
+
+def remove_text_from_img(img):
+    # keras-ocr will automatically download pretrained
+    # weights for the detector and recognizer.
+    pipeline = keras_ocr.pipeline.Pipeline()
+    img_text_removed = inpaint_text(img, pipeline)
+    plt.imshow(img_text_removed)
+    cv2.imshow("image", img_text_removed)
+    cv2.waitKey(0)
+    return img_text_removed
+
 # Find the top 5 largest rectangular regions not covered by the bounding boxes
-# coords = find_top_k_rectangles(
-#     final_img, ~mask, 5, aspect_ratio_threshold=2, max_zero_percentage=0.0)
-coords = find_top_k_rectangles_new(
-    final_img, ~mask, 5, aspect_ratio_threshold=3, max_zero_percentage=0.0)
+# final_img, mask = get_final_img_and_mask(img)
+# coords = find_top_k_rectangles_new(
+#     final_img, ~mask, 5, aspect_ratio_threshold=3, max_zero_percentage=0.0)
 # coords = 0, 0, 500, 250
 # res = is_eligible_top_k_rectangle(~mask, coords)
-print("coordinates of top 5 largest rectangular regions not covered by the bounding boxes:", coords)
+# print("coordinates of top 5 largest rectangular regions not covered by the bounding boxes:", coords)
 
-# show final image
-cv2.imshow("mask", mask)
-cv2.imshow("final image", final_img)
+
+# Load YOLOv5 model
+model = torch.hub.load('ultralytics/yolov5', 'yolov5s')
+img_path = '4.jpg'
+img = cv2.imread(img_path)
+remove_text_from_img(img)
+cv2.imshow("image", img)
+# final_img = img.copy()
+
+# res_image = add_text_to_image(
+#     text="get burgers hello world", raw_img=img, coords=(252, 0, 252+348, 0+201), centered=False)
+
+
+# cv2.imshow("final image", res_image)
 cv2.waitKey(0)
 
 quit()
+
+# Functions that are interesting to add:
+# Bolding the words in the text that are meaningful based on the topics
+# Modifying the color of the text between important and non important words
