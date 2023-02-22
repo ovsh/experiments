@@ -436,14 +436,14 @@ class ImageProcessor:
 
         return img_copy, mask
 
-    def write_ad_copy(self, text, img):
+    def write_ad_copy(self, text, img, max_zero_percentage=0.0, aspect_ratio_threshold=3):
         # first step is we find the rectangles in the image
         # then for top rectangle, we call add_text_to_image
 
         mask = self.get_final_img_and_mask(img)[1]
         # find the top 5 rectangles
         coords = self.find_top_k_rectangles_new(
-            img, ~mask, k=5, max_zero_percentage=0.0, aspect_ratio_threshold=3)
+            img, ~mask, k=5, max_zero_percentage=max_zero_percentage, aspect_ratio_threshold=aspect_ratio_threshold)
 
         # get mask to apply
         img = self.add_text_to_image(text, img, coords[0])
@@ -460,7 +460,7 @@ if __name__ == "__main__":
     ImageProcessor = ImageProcessor(debug=True)
     # write copy
     final_img = ImageProcessor.write_ad_copy(
-        "get burgers hello world", no_text_img)
+        "get burgers hello world", no_text_img, max_zero_percentage=0.0, aspect_ratio_threshold=3)
 
     # show the image and wait for a keypress
     cv2.imshow("final image", final_img)
