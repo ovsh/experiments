@@ -13,6 +13,14 @@ import torch
 from shapely.geometry import Polygon
 
 
+#define python class that refactors the code in this page 
+#
+
+def midpoint(x1, y1, x2, y2):
+    x_mid = int((x1 + x2)/2)
+    y_mid = int((y1 + y2)/2)
+    return (x_mid, y_mid)
+
 def rect_overlap_area(rect1, rect2):
     x1, y1, w1, h1 = rect1
     x2, y2, w2, h2 = rect2
@@ -24,126 +32,6 @@ def rect_overlap_area(rect1, rect2):
         return (right - left + 1) * (bottom - top + 1)
     else:
         return 0
-
-
-def find_top_k_rectangles(final_img, mask, k, max_zero_percentage=0.0, aspect_ratio_threshold=4):
-
-    # Find the rectangular regions in each row
-    row_regions = []
-    for y in range(mask.shape[0]):
-        regions = []
-        start = None
-        for x in range(mask.shape[1]):
-            if mask[y, x] == 255:
-                if start is None:
-                    start = x
-            else:
-                if start is not None:
-                    regions.append((start, x - 1))
-                    start = None
-        if start is not None:
-            regions.append((start, mask.shape[1] - 1))
-        row_regions.append(regions)
-
-    # Find the rectangular regions in each column
-    col_regions = []
-    for x in range(mask.shape[1]):
-        regions = []
-        start = None
-        for y in range(mask.shape[0]):
-            if mask[y, x] == 255:
-                if start is None:
-                    start = y
-            else:
-                if start is not None:
-                    regions.append((start, y - 1))
-                    # cv2.rectangle(final_img, (x, start),
-                    #               (x, y - 1), (0, 0, 0), -1)
-                    start = None
-        if start is not None:
-            regions.append((start, mask.shape[0] - 1))
-            # cv2.rectangle(final_img, (x, start), (x, y - 1), (0, 0, 0), -1)
-
-        if not regions:
-            # If the column has no runs of 255 pixels, add a region spanning the entire column
-            regions.append((0, mask.shape[0] - 1))
-            # cv2.rectangle(final_img, (x, start), (x, y - 1), (0, 0, 0), -1)
-
-        col_regions.append(regions)
-
-    # Merge the row and column regions into rectangular regions
-    regions = []
-    for x, col in enumerate(col_regions):
-        for y1, y2 in col:
-            for x1, x2 in row_regions[y1]:
-                if x1 <= x <= x2:
-                    # Check if any pixel within the candidate rectangle has a value of 0 in the original binary mask
-                    if np.sum(mask[y1:y2+1, x1:x2+1] == 0) / ((y2 - y1 + 1) * (x2 - x1 + 1)) > max_zero_percentage:
-                        continue
-                    # Compute the area and aspect ratio of the rectangle
-                    rect_area = (x2 - x1 + 1) * (y2 - y1 + 1)
-                    aspect_ratio = (x2 - x1 + 1) / (y2 - y1 + 1)
-                    # Filter out rectangles with aspect ratio above the threshold or below a minimum value
-                    if aspect_ratio > aspect_ratio_threshold or aspect_ratio < 1/aspect_ratio_threshold:
-                        continue
-                    regions.append((x1, y1, x2 - x1 + 1, y2 - y1 + 1))
-
-                    # Compute the area of the rectangle and its union with previously selected rectangles
-                    rect_area = (x2 - x1 + 1) * (y2 - y1 + 1)
-                    overlap_area = sum([rect_overlap_area(
-                        (x1, y1, x2 - x1 + 1, y2 - y1 + 1), prev_rect) for prev_rect in regions])
-                    # Check if the rectangle is at least 50% unique
-                    if rect_area / (rect_area + overlap_area) < 0.5:
-                        continue
-                    regions.append((x1, y1, x2 - x1 + 1, y2 - y1 + 1))
-
-    for y, row in enumerate(row_regions):
-        for x1, x2 in row:
-            for y1, y2 in col_regions[x1]:
-                if y1 <= y <= y2:
-                    # Check if any pixel within the candidate rectangle has a value of 0 in the original binary mask
-                    if np.sum(mask[y1:y2+1, x1:x2+1] == 0) / ((y2 - y1 + 1) * (x2 - x1 + 1)) > max_zero_percentage:
-                        continue
-                    # Compute the area and aspect ratio of the rectangle
-                    rect_area = (x2 - x1 + 1) * (y2 - y1 + 1)
-                    aspect_ratio = (x2 - x1 + 1) / (y2 - y1 + 1)
-                    # Filter out rectangles with aspect ratio above the threshold or below a minimum value
-                    if aspect_ratio > aspect_ratio_threshold or aspect_ratio < 1/aspect_ratio_threshold:
-                        continue
-                    regions.append((x1, y1, x2 - x1 + 1, y2 - y1 + 1))
-
-                    # Compute the area of the rectangle and its union with previously selected rectangles
-                    rect_area = (x2 - x1 + 1) * (y2 - y1 + 1)
-                    overlap_area = sum([rect_overlap_area(
-                        (x1, y1, x2 - x1 + 1, y2 - y1 + 1), prev_rect) for prev_rect in regions])
-                    # Check if the rectangle is at least 50% unique
-                    if rect_area / (rect_area + overlap_area) < 0.5:
-                        continue
-                    regions.append((x1, y1, x2 - x1 + 1, y2 - y1 + 1))
-
-    # Sort the regions by area in descending order
-    regions = sorted(
-        regions, key=lambda region: region[2] * region[3], reverse=True)
-
-   # Keep the top k regions
-    unique_regions = []
-    for region in regions:
-        if not any(rect_overlap_area(region, prev_rect) >= 0.5 * min(region[2] * region[3], prev_rect[2] * prev_rect[3]) for prev_rect in unique_regions):
-            unique_regions.append(region)
-        if len(unique_regions) == k:
-            break
-
-    # Draw rectangles around the top k regions
-    # TODO EDIT TO FIND UNIQUES
-    for x, y, w, h in regions:
-        cv2.rectangle(final_img, (x, y), (x + w - 1,
-                      y + h - 1), (0, 0, 0), 2)
-
-    # Get the x, y coordinates of the top k regions
-    coords = [(x, y) for x, y, _, _ in unique_regions]
-
-    return coords
-
 
 def add_text_to_image(text, raw_img, coords, padding=0.95, centered=True, split_lines=True):
     # Convert the input image to the PIL format
@@ -355,11 +243,12 @@ def find_top_k_rectangles_new(final_img, mask, k, max_zero_percentage=0.0, aspec
 
     return coords
 
-
 def get_final_img_and_mask(img):
 
     # # Perform object detection on the image
-    results = model(img)
+    # copy img to a new variable
+    img_copy = img.copy()
+    results = model(img_copy)
     res = results.pandas().xyxy[0]
 
     for obj in results.xyxy[0]:
@@ -368,11 +257,11 @@ def get_final_img_and_mask(img):
         print(
             f'Found {label} with confidence {conf:.2f} at ({x1:.0f}, {y1:.0f}) - ({x2:.0f}, {y2:.0f})')
         # Remove the detected objects from the image by drawing a black rectangle around them
-        cv2.rectangle(img, (int(x1), int(y1)),
+        cv2.rectangle(img_copy, (int(x1), int(y1)),
                       (int(x2), int(y2)), (0, 0, 0), -1)
 
     # Load the image
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.cvtColor(img_copy, cv2.COLOR_BGR2GRAY)
     # cv2.imshow('img', img)
     # cv2.waitKey(0)
 
@@ -414,29 +303,7 @@ def get_final_img_and_mask(img):
     for x, y, w, h in bounding_boxes:
         cv2.rectangle(mask, (x, y), (x + w, y + h), 255, -1)
 
-    return final_img, mask
-
-
-# General Approach.....
-# Use keras OCR to detect text, define a mask around the text, and inpaint the
-# masked regions to remove the text.
-# To apply the mask we need to provide the coordinates of the starting and
-# the ending points of the line, and the thickness of the line
-
-# The start point will be the mid-point between the top-left corner and
-# the bottom-left corner of the box.
-# the end point will be the mid-point between the top-right corner and the bottom-right corner.
-# The following function does exactly that.
-
-
-def midpoint(x1, y1, x2, y2):
-    x_mid = int((x1 + x2)/2)
-    y_mid = int((y1 + y2)/2)
-    return (x_mid, y_mid)
-
-# Main function that detects text and inpaints.
-# Inputs are the image path and kreas_ocr pipeline
-
+    return img_copy, mask
 
 def inpaint_text(img, pipeline):
     # read the image
@@ -460,48 +327,50 @@ def inpaint_text(img, pipeline):
 
         # For the line thickness, we will calculate the length of the line between
         # the top-left corner and the bottom-left corner.
-        thickness = int(math.sqrt((x2 - x1)**2 + (y2 - y1)**2))
+        thickness = int(math.sqrt((x2 - x1)**3 + (y2 - y1)**3))
 
         # Define the line and inpaint
         cv2.line(mask, (x_mid0, y_mid0), (x_mid1, y_mi1), 255,
                  thickness)
+        # show it on the image and pause for a keypress
         inpainted_img = cv2.inpaint(img, mask, 7, cv2.INPAINT_NS)
 
     return (inpainted_img)
-
 
 def remove_text_from_img(img):
     # keras-ocr will automatically download pretrained
     # weights for the detector and recognizer.
     pipeline = keras_ocr.pipeline.Pipeline()
     img_text_removed = inpaint_text(img, pipeline)
-    plt.imshow(img_text_removed)
-    cv2.imshow("image", img_text_removed)
-    cv2.waitKey(0)
+    # plt.imshow(img_text_removed)
+    # cv2.imshow("image", img_text_removed)
+    # cv2.waitKey(0)
     return img_text_removed
-
-# Find the top 5 largest rectangular regions not covered by the bounding boxes
-# final_img, mask = get_final_img_and_mask(img)
-# coords = find_top_k_rectangles_new(
-#     final_img, ~mask, 5, aspect_ratio_threshold=3, max_zero_percentage=0.0)
-# coords = 0, 0, 500, 250
-# res = is_eligible_top_k_rectangle(~mask, coords)
-# print("coordinates of top 5 largest rectangular regions not covered by the bounding boxes:", coords)
 
 
 # Load YOLOv5 model
 model = torch.hub.load('ultralytics/yolov5', 'yolov5s')
 img_path = '4.jpg'
 img = cv2.imread(img_path)
-remove_text_from_img(img)
-cv2.imshow("image", img)
-# final_img = img.copy()
+no_text_img = remove_text_from_img(img)
+# cv2.imshow("no text image", no_text_img)
+# cv2.waitKey(0)
+# save in a file
+# cv2.imwrite("no_text_image.jpg", no_text_img)
+# Find the top 5 largest rectangular regions not covered by the bounding boxes
+final_img, mask = get_final_img_and_mask(no_text_img)
 
-# res_image = add_text_to_image(
-#     text="get burgers hello world", raw_img=img, coords=(252, 0, 252+348, 0+201), centered=False)
+#take the mask and show it in the image
+# cv2.imshow("mask", mask)
+# cv2.waitKey(0)
+coords = find_top_k_rectangles_new(
+    no_text_img, ~mask, 5, aspect_ratio_threshold=3, max_zero_percentage=0.0)
+# print coords and type of cords
+res_image = add_text_to_image(
+    text="get burgers hello world", raw_img=no_text_img, coords=coords[0], centered=False)
 
 
-# cv2.imshow("final image", res_image)
+cv2.imshow("final image", res_image)
 cv2.waitKey(0)
 
 quit()
