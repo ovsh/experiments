@@ -86,7 +86,7 @@ class ImageTextDetector:
 
             # For the line thickness, we will calculate the length of the line between
             # the top-left corner and the bottom-left corner.
-            thickness = int(math.sqrt((x2 - x1)**3 + (y2 - y1)**3))
+            thickness = int(math.sqrt((x2 - x1)**2 + (y2 - y1)**2))
 
             # Define the line and inpaint
             cv2.line(mask, (x_mid0, y_mid0), (x_mid1, y_mi1), 255,
@@ -140,7 +140,7 @@ class ImageProcessor:
         else:
             return 0
 
-    def add_text_to_image(self, text, raw_img, coords, padding=0.98, centered=True, split_lines=True):
+    def add_text_to_image(self, text, raw_img, coords, padding=0.98, centered=True, split_lines=False):
         # Convert the input image to the PIL format
         raw_img = cv2.convertScaleAbs(raw_img)
         img = Image.fromarray(cv2.cvtColor(raw_img, cv2.COLOR_BGR2RGB))
@@ -170,36 +170,38 @@ class ImageProcessor:
                 "arial.ttf", font_size_multi_line)
 
             # Split the text into two lines that fit within the bounding box
-            max_chars_per_line = len(text) // 2  # split text in half
-            while True:
-                # Calculate the size of the first line
-                first_line = text[:max_chars_per_line]
-                first_line_size = font_multi_line.getsize(first_line)
-
-                # Check if the first line fits within the bounding box
-                if first_line_size[0] <= padding * width and first_line_size[1] <= padding * height:
-                    # Calculate the size of the second line
-                    second_line = text[max_chars_per_line:]
-                    second_line_size = font_multi_line.getsize(second_line)
-
-                    # Check if the second line fits within the bounding box
-                    if second_line_size[0] <= padding * width and second_line_size[1] <= padding * height:
-                        # Both lines fit, so increase font size and continue
-                        font_size_multi_line += 1
-                        font_multi_line = ImageFont.truetype(
-                            "arial.ttf", font_size_multi_line)
+            words = text.split()
+            if len(words) <= 1:
+                lines = [text]
+            else:
+                lines = []
+                line = ""
+                for word in words:
+                    if font_multi_line.getlength(line + word) < padding * width and font_multi_line.getlength(line + word + " ") < padding * width:
+                        line += word + " "
                     else:
-                        if (self.debug == True):
-                            print('break condition hit. here is the size of the font: {}, the width: {}, and the height: {}'.format(
-                                font_size_multi_line, padding * width, padding * height))
-                        # Second line does not fit, so use previous font size
-                        break
-                else:
-                    if (self.debug == True):
-                        print('break condition hit. here is the size of the font: {}, the width: {}, and the height: {}'.format(
-                            font_size_multi_line, padding * width, padding * height))
-                    # First line does not fit, so use previous font size
-                    break
+                        lines.append(line[:-1])
+                        line = word + " "
+                        if len(lines) == 1:
+                            max_chars_per_line = len(line)//2
+                lines.append(line[:-1])
+
+                if len(lines) == 2:
+                    # Check if the second line exceeds the width of the bounding box
+                    if font_multi_line.getlength(lines[1]) > padding * width:
+                        # If so, try splitting the second line at the midpoint
+                        midpoint = len(lines[1])//2
+                        lines[1] = lines[1][:midpoint].strip()
+                        lines.insert(2, lines[1][midpoint:].strip())
+                    elif font_multi_line.getlength(lines[1]) + font_multi_line.getlength(lines[0]) > padding * width:
+                        # If the two lines combined exceed the width of the bounding box, split the first line at the midpoint
+                        midpoint = max_chars_per_line
+                        lines[0] = lines[0][:midpoint].strip()
+                        lines.insert(1, lines[0][midpoint:].strip())
+
+                font_size_multi_line = font_size
+                font_multi_line = ImageFont.truetype(
+                    "arial.ttf", font_size_multi_line)
 
             # Set font size to be the minimum of single line and multi-line font sizes
             if split_lines:
@@ -208,8 +210,8 @@ class ImageProcessor:
             else:
                 # Use single-line font size
                 font_size = font_size
-        font = ImageFont.truetype("arial.ttf", font_size)
 
+        font = ImageFont.truetype("arial.ttf", font_size)
         if split_lines:
             # Split the text into two lines if necessary
             if font.getsize(text)[0] > padding * width:
@@ -257,23 +259,43 @@ class ImageProcessor:
         # Draw the text on the image
         for line in lines:
             draw.text((x, y), line, font=font, fill=(255, 255, 255))
-            print("Text drawn at ({}, {}). Text = {}".format(x, y, line))
+            if self.debug == True:
+                print("Text drawn at ({}, {}). Text = {}".format(x, y, line))
             y += font_size
 
         # Print where you drew the text, including text font size and width and height
-        print("Text drawn at ({}, {})".format(x, y))
-        print("Text font size: {}".format(font_size))
-        print("Text width: {}".format(font.getbbox(
-            lines[0])[2] - font.getbbox(lines[0])[0]))
+        if self.debug == True:
+            print("Text drawn at ({}, {})".format(x, y))
+            print("Text font size: {}".format(font_size))
+            print("Text width: {}".format(font.getbbox(
+                lines[0])[2] - font.getbbox(lines[0])[0]))
 
         # Convert the modified image back to the OpenCV format
         modified_image = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
 
         # draw a bounding box around the original coords in black and then draw another bounding box around the bounding box of the text in red
-        cv2.rectangle(modified_image, (x1, y1), (x2, y2), (0, 0, 0), 2)
-        # cv2.rectangle(modified_image, (x1, y1), (x2, y2), (0, 0, 255), 1)
+        if self.debug == True:
+            cv2.rectangle(modified_image, (x1, y1), (x2, y2), (0, 0, 0), 2)
+            cv2.rectangle(modified_image, (x1, y1), (x2, y2), (0, 0, 255), 1)
 
         return modified_image
+
+    def remove_small_components(self, mask, min_size):
+        # Perform connected components analysis
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+            mask, connectivity=8)
+
+        # Remove small components
+        for i in range(1, num_labels):
+            if stats[i, cv2.CC_STAT_AREA] < min_size:
+                labels[labels == i] = 0
+
+        # Apply the new labels to the mask and remove small holes
+        mask = (labels > 0).astype(np.uint8) * 255
+        mask = cv2.morphologyEx(
+            mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+
+        return mask
 
     def find_top_k_rectangles_new(self, img, mask, k, max_zero_percentage=0.0, aspect_ratio_threshold=4):
         regions = []
@@ -296,7 +318,8 @@ class ImageProcessor:
         # Binary search to find the largest rectangle from a starting point
         def find_largest_rect(x, y):
             best_rect = expand_from_point(x, y)
-            print('best_rect: {}'.format(best_rect))
+            # if self.debug == True:
+            # print('best_rect: {}'.format(best_rect))
             max_width = min(best_rect[2], best_rect[3]*aspect_ratio_threshold)
             min_width = max(1, best_rect[3]/aspect_ratio_threshold)
             while max_width >= min_width:
@@ -323,11 +346,12 @@ class ImageProcessor:
                                 rect[3], rect[0]:rect[0]+rect[2]]
                 if np.any(subarray == 0):
                     zero_percentage = np.mean(subarray == 0)
-                    # if coordinates are 0,0,600,600 - print the zero percentage and the max zero percentage
-                    if rect[0] == 0 and rect[1] == 0 and rect[2] == 600 and rect[3] == 600:
-                        print('zero_percentage: {}'.format(zero_percentage))
-                        print('max_zero_percentage: {}'.format(
-                            max_zero_percentage))
+                    # # if coordinates are 0,0,600,600 - print the zero percentage and the max zero percentage
+                    # if rect[0] == 0 and rect[1] == 0 and rect[2] == 600 and rect[3] == 600:
+                    #     if self.debug == True:
+                    #         print('zero_percentage: {}'.format(zero_percentage))
+                    #         print('max_zero_percentage: {}'.format(
+                    #             max_zero_percentage))
                     if zero_percentage > max_zero_percentage:
                         continue
                 # Filter out rectangles with aspect ratio above the threshold or below a minimum value
@@ -341,8 +365,8 @@ class ImageProcessor:
                     continue
                 regions.append(rect)
 
-        cv2.imshow("mask", mask)
-        cv2.waitKey(0)
+        # cv2.imshow("mask", mask)
+        # cv2.waitKey(0)
 
         # Sort the regions by area in descending order
         regions = sorted(
@@ -356,15 +380,15 @@ class ImageProcessor:
             if len(unique_regions) == k:
                 break
 
-        # if (self.debug == True):
-        print("Number of regions found: {}".format(len(unique_regions)))
-        print("Regions: {}".format(unique_regions))
+        if (self.debug == True):
+            print("Number of regions found: {}".format(len(unique_regions)))
+            print("Regions: {}".format(unique_regions))
         # Draw rectangles around the top k regions
-        for x, y, w, h in unique_regions:
-            cv2.rectangle(img, (x, y),
-                          (x + w - 1, y + h - 1), (0, 0, 0), 2)
-        cv2.imshow("Image", img)
-        cv2.waitKey(0)
+            for x, y, w, h in unique_regions:
+                cv2.rectangle(img, (x, y),
+                              (x + w - 1, y + h - 1), (0, 0, 0), 2)
+        # cv2.imshow("Image", img)
+        # cv2.waitKey(0)
 
         # Get the x, y coordinates of the top k regions and print them
         coords = [(x1, y1, x1 + w, y1 + h) for x1, y1, w, h in unique_regions]
@@ -382,8 +406,10 @@ class ImageProcessor:
         for obj in results.xyxy[0]:
             x1, y1, x2, y2, conf, cls = obj[:6]
             label = self.model.names[int(cls)]
-            print(
-                f'Found {label} with confidence {conf:.2f} at ({x1:.0f}, {y1:.0f}) - ({x2:.0f}, {y2:.0f})')
+            if self.debug == True:
+                print(
+                    f'Found {label} with confidence {conf:.2f} at ({x1:.0f}, {y1:.0f}) - ({x2:.0f}, {y2:.0f})')
+
             # Remove the detected objects from the image by drawing a black rectangle around them
             cv2.rectangle(img_copy, (int(x1), int(y1)),
                           (int(x2), int(y2)), (0, 0, 0), -1)
@@ -426,17 +452,22 @@ class ImageProcessor:
                 print(x, y, w, h)
                 print("size of each contur in image: ", cv2.contourArea(c))
                 cv2.rectangle(img, (x, y), (x + w, y + h), (0, 0, 255), 2)
-            cv2.putText(img, f"#{i+1}", (x, y-5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                cv2.putText(img, f"#{i+1}", (x, y-5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
         # Create a mask that marks the areas covered by the bounding boxes
         mask = np.zeros_like(gray)
         for x, y, w, h in bounding_boxes:
             cv2.rectangle(mask, (x, y), (x + w, y + h), 255, -1)
 
+        # remove small objects from the binary image
+        # set minsize for at least 10% of the image size
+        min_size = int(0.1 * img.shape[0] * img.shape[1])
+        mask = self.remove_small_components(mask, min_size)
+        
         return img_copy, mask
 
-    def write_ad_copy(self, text, img, max_zero_percentage=0.0, aspect_ratio_threshold=3):
+    def write_ad_copy(self, text, img, max_zero_percentage=0.0, aspect_ratio_threshold=3, split_lines=False):
         # first step is we find the rectangles in the image
         # then for top rectangle, we call add_text_to_image
 
@@ -444,7 +475,6 @@ class ImageProcessor:
         # find the top 5 rectangles
         coords = self.find_top_k_rectangles_new(
             img, ~mask, k=5, max_zero_percentage=max_zero_percentage, aspect_ratio_threshold=aspect_ratio_threshold)
-
         # get mask to apply
         img = self.add_text_to_image(text, img, coords[0])
 
@@ -457,10 +487,10 @@ if __name__ == "__main__":
     # remove text from image
     ImageTextDetector = ImageTextDetector()
     no_text_img = ImageTextDetector.remove_text_from_image(img)
-    ImageProcessor = ImageProcessor(debug=True)
+    ImageProcessor = ImageProcessor(debug=False)
     # write copy
     final_img = ImageProcessor.write_ad_copy(
-        "get burgers hello world", no_text_img, max_zero_percentage=0.0, aspect_ratio_threshold=3)
+        "buy big car", no_text_img, max_zero_percentage=0.0, aspect_ratio_threshold=3, split_lines=False)
 
     # show the image and wait for a keypress
     cv2.imshow("final image", final_img)
