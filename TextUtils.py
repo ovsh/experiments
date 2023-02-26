@@ -54,7 +54,6 @@ class ImageTextDetector:
             # Get the text
             text = [prediction[1] for prediction in predictions]
 
-            # Return the predictions
             return predictions
         except Exception as e:
             # Handle the exception
@@ -84,6 +83,12 @@ class ImageTextDetector:
             x_mid0, y_mid0 = ImageProcessor.midpoint(x1, y1, x2, y2)
             x_mid1, y_mi1 = ImageProcessor.midpoint(x0, y0, x3, y3)
 
+            # draw a blue rectangle around each boudning box. make surer to convert the coordinates to integers first.
+            # cv2.rectangle(img, (int(x0), int(y0)),
+            #               (int(x2), int(y2)), (255, 0, 0), 2)
+            # cv2.rectangle(img, (int(x1), int(y1)),
+            #               (int(x3), int(y3)), (255, 0, 0), 2)
+
             # For the line thickness, we will calculate the length of the line between
             # the top-left corner and the bottom-left corner.
             thickness = int(math.sqrt((x2 - x1)**2 + (y2 - y1)**2))
@@ -93,6 +98,8 @@ class ImageTextDetector:
                      thickness)
             # show it on the image and pause for a keypress
             inpainted_img = cv2.inpaint(img, mask, 7, cv2.INPAINT_NS)
+        # cv2.imshow("Inpainted", inpainted_img)
+        # cv2.waitKey(0)
 
         return (inpainted_img)
 
@@ -140,7 +147,7 @@ class ImageProcessor:
         else:
             return 0
 
-    def add_text_to_image(self, text, raw_img, coords, padding=0.98, centered=True, split_lines=False):
+    def new_add_text_to_image(self, text, raw_img, coords, center_align_rows=True, padding=0.98, centered=True, split_lines=False, color=(255, 255, 255)):
         # Convert the input image to the PIL format
         raw_img = cv2.convertScaleAbs(raw_img)
         img = Image.fromarray(cv2.cvtColor(raw_img, cv2.COLOR_BGR2RGB))
@@ -152,22 +159,165 @@ class ImageProcessor:
         x1, y1, x2, y2 = map(int, coords)
         width, height = x2 - x1, y2 - y1
 
-        # Calculate the maximum font size
+        # if debug true, draw a blue rectangle around the bounding box
+        if self.debug:
+            draw.rectangle(((x1, y1), (x2, y2)), outline="blue")
+            # paint the full rectangle with a blue color
+            draw.rectangle(((x1, y1), (x2, y2)), fill="blue")
+            # print coordinates
+            print(f"Coordinates: {x1}, {y1}, {x2}, {y2}")
+
+        # Set font properties
+        text = text.upper()  # Convert the text to uppercase
+        font_name = "arial.ttf"
         font_size = 1
-        font = ImageFont.truetype("arial.ttf", font_size)
+        isBold = True
+        font = ImageFont.truetype(font_name, font_size)
+
+        # Calculate the maximum font size for single line text
+        if not split_lines:
+            while font.getlength(text) < padding * width and font.getbbox(text)[3] - font.getbbox(text)[1] < padding * height:
+                font_size += 1
+                font = ImageFont.truetype(font_name, font_size)
+
+        # First we split the text to two lines, cutting it in the middle as much as possible but ONLY on words
+        lines = []
+        if split_lines:
+            words = text.split()
+            if len(words) <= 1:
+                lines = [text]
+            else:
+                lines = []
+                line_1 = ""
+                lines_2 = ""
+                # find the middle word of the text
+                middle_word = words[len(words)//2]
+                line_1 = " ".join(words[:len(words)//2 + 1])
+                line_2 = " ".join(words[len(words)//2 + 1:])
+                # check if length of line_2 is greater than line_1, and if so, remove the middle word from line_1 and add it to line_2
+                # this is to ensure that the text is split as evenly as possible
+                if len(line_2) > len(line_1):
+                    line_1 = " ".join(words[:len(words)//2])
+                    line_2 = " ".join(words[len(words)//2:])
+                lines.append(line_1)
+                lines.append(line_2)
+
+        # Next we calculate the font size for each line
+        font_size_multi_line = 1
+        font_multi_line = ImageFont.truetype(font_name, font_size_multi_line)
+        while font_multi_line.getlength(lines[0]) < padding * width and font_multi_line.getlength(lines[0] + " ") < padding * width:
+            font_size_multi_line += 1
+            font_multi_line = ImageFont.truetype(
+                font_name, font_size_multi_line)
+
+        # Calculate the coordinates of the top-left corner of the text
+        if centered:
+            x = x1 + (width - font.getbbox(lines[0])
+                      [2] + font.getbbox(lines[0])[0]) / 2
+            y = y1 + (height - font_size * len(lines)) / 2
+        else:
+            x = x1 + (1-padding)*0.5 * width
+            y = y1 + (1-padding)*0.5 * height
+
+        # Set font color
+        color_main = color
+        color_second = (200, 200, 200)
+        print(lines)
+        print(len(lines))
+        # print coordinates
+        print(f"Coordinates: {x1}, {y1}, {x2}, {y2}")
+        if center_align_rows:
+            # Calculate the total height of the text
+            total_text_height = font_size * len(lines)
+
+            # Calculate the total padding (i.e., the space between the top and bottom of the bounding box and the top and bottom of the text)
+            total_padding = height - total_text_height
+
+            # Calculate the y-coordinate of the first line based on the total padding
+            y = y1 + total_padding / 2
+
+            # Center-align each line of text with respect to the bounding box
+            for line in lines:
+                x = x1 + (width - font.getlength(line)) / 2
+                draw.text((x, y), line, font=font, fill=color)
+                # print: drew text at (x, y). here's the content: line
+                print("Text drawn at ({}, {}). Text = {}".format(x, y, line))
+                if self.debug == True:
+                    print("Text drawn at ({}, {}). Text = {}".format(x, y, line))
+                y += font_size
+
+        if not center_align_rows:
+            # draw with left align
+            # Draw the text on the image
+            for i, line in enumerate(lines):
+                if i == 0:
+                    draw.text((x, y), line.upper(), font=font, fill=color_main)
+                else:
+                    draw.text((x, y), line.upper(),
+                              font=font, fill=color_second)
+                if self.debug == True:
+                    print("Text drawn at ({}, {}). Text = {}".format(x, y, line))
+                    # font size print 
+                    print("Text font size: {}".format(font_size))
+                y += font_size
+
+        # Print where you drew the text, including text font size and width and height
+        if self.debug == True:
+            print("Text drawn at ({}, {})".format(x, y))
+            print("Text font size: {}".format(font_size))
+            print("Text width: {}".format(font.getbbox(
+                lines[0])[2] - font.getbbox(lines[0])[0]))
+
+        # Convert the modified image back to the OpenCV format
+        modified_image = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        cv2.imshow("modified_image", modified_image)
+        cv2.waitKey(0)
+
+        # draw a bounding box around the original coords in black and then draw another bounding box around the bounding box of the text in red
+        if self.debug == True:
+            cv2.rectangle(modified_image, (x1, y1), (x2, y2), (0, 0, 0), 2)
+            cv2.rectangle(modified_image, (x1, y1), (x2, y2), (0, 0, 255), 1)
+
+        return modified_image
+
+    def add_text_to_image(self, text, raw_img, coords, center_align_rows=True, padding=0.98, centered=True, split_lines=False, color=(255, 255, 255)):
+        # Convert the input image to the PIL format
+        raw_img = cv2.convertScaleAbs(raw_img)
+        img = Image.fromarray(cv2.cvtColor(raw_img, cv2.COLOR_BGR2RGB))
+
+        # Create a drawing context
+        draw = ImageDraw.Draw(img)
+
+        # Get the size of the bounding box
+        x1, y1, x2, y2 = map(int, coords)
+        width, height = x2 - x1, y2 - y1
+
+        # if debug true, draw a blue rectangle around the bounding box
+        if self.debug:
+            draw.rectangle(((x1, y1), (x2, y2)), outline="blue")
+            # paint the full rectangle with a blue color
+            draw.rectangle(((x1, y1), (x2, y2)), fill="blue")
+            # print coordinates
+            print(f"Coordinates: {x1}, {y1}, {x2}, {y2}")
+
+        # Set font properties
+        text = text.upper()  # Convert the text to uppercase
+        font_name = "arial.ttf"
+        font_size = 1
+        isBold = True
+        font = ImageFont.truetype(font_name, font_size)
 
         # Calculate the maximum font size for single line text
         while font.getlength(text) < padding * width and font.getbbox(text)[3] - font.getbbox(text)[1] < padding * height:
             font_size += 1
-            font = ImageFont.truetype("arial.ttf", font_size)
-        # font_size -= 1  # shrink font once because it exceeded the bounding box that we set in the above loop
+            font = ImageFont.truetype(font_name, font_size)
 
         # Calculate the maximum font size for multi-line text
         if split_lines:
             # Create the ImageFont object for multi-line text
             font_size_multi_line = 1
             font_multi_line = ImageFont.truetype(
-                "arial.ttf", font_size_multi_line)
+                font_name, font_size_multi_line)
 
             # Split the text into two lines that fit within the bounding box
             words = text.split()
@@ -201,7 +351,7 @@ class ImageProcessor:
 
                 font_size_multi_line = font_size
                 font_multi_line = ImageFont.truetype(
-                    "arial.ttf", font_size_multi_line)
+                    font_name, font_size_multi_line)
 
             # Set font size to be the minimum of single line and multi-line font sizes
             if split_lines:
@@ -211,7 +361,7 @@ class ImageProcessor:
                 # Use single-line font size
                 font_size = font_size
 
-        font = ImageFont.truetype("arial.ttf", font_size)
+        font = ImageFont.truetype(font_name, font_size)
         if split_lines:
             # Split the text into two lines if necessary
             if font.getsize(text)[0] > padding * width:
@@ -256,12 +406,40 @@ class ImageProcessor:
             x = x1 + (1-padding)*0.5 * width
             y = y1 + (1-padding)*0.5 * height
 
-        # Draw the text on the image
-        for line in lines:
-            draw.text((x, y), line, font=font, fill=(255, 255, 255))
-            if self.debug == True:
-                print("Text drawn at ({}, {}). Text = {}".format(x, y, line))
-            y += font_size
+        # Set font color
+        color_main = color
+        color_second = (200, 200, 200)
+
+        if center_align_rows:
+            # Calculate the total height of the text
+            total_text_height = font_size * len(lines)
+
+            # Calculate the total padding (i.e., the space between the top and bottom of the bounding box and the top and bottom of the text)
+            total_padding = height - total_text_height
+
+            # Calculate the y-coordinate of the first line based on the total padding
+            y = y1 + total_padding / 2
+
+            # Center-align each line of text with respect to the bounding box
+            for line in lines:
+                x = x1 + (width - font.getlength(line)) / 2
+                draw.text((x, y), line, font=font, fill=color)
+                if self.debug == True:
+                    print("Text drawn at ({}, {}). Text = {}".format(x, y, line))
+                y += font_size
+
+        if not center_align_rows:
+            # draw with left align
+            # Draw the text on the image
+            for i, line in enumerate(lines):
+                if i == 0:
+                    draw.text((x, y), line.upper(), font=font, fill=color_main)
+                else:
+                    draw.text((x, y), line.upper(),
+                              font=font, fill=color_second)
+                if self.debug == True:
+                    print("Text drawn at ({}, {}). Text = {}".format(x, y, line))
+                y += font_size
 
         # Print where you drew the text, including text font size and width and height
         if self.debug == True:
@@ -464,10 +642,10 @@ class ImageProcessor:
         # set minsize for at least 10% of the image size
         min_size = int(0.1 * img.shape[0] * img.shape[1])
         mask = self.remove_small_components(mask, min_size)
-        
+
         return img_copy, mask
 
-    def write_ad_copy(self, text, img, max_zero_percentage=0.0, aspect_ratio_threshold=3, split_lines=False):
+    def write_ad_copy(self, text, img, padding, split_lines, max_zero_percentage=0.0, aspect_ratio_threshold=3, center_align_rows=True):
         # first step is we find the rectangles in the image
         # then for top rectangle, we call add_text_to_image
 
@@ -476,13 +654,14 @@ class ImageProcessor:
         coords = self.find_top_k_rectangles_new(
             img, ~mask, k=5, max_zero_percentage=max_zero_percentage, aspect_ratio_threshold=aspect_ratio_threshold)
         # get mask to apply
-        img = self.add_text_to_image(text, img, coords[0])
+        img = self.new_add_text_to_image(
+            text, img, coords[0], center_align_rows=center_align_rows, split_lines=split_lines, padding=padding)
 
         return img
 
 
 if __name__ == "__main__":
-    img_path = '4.jpg'
+    img_path = '1.jpg'
     img = cv2.imread(img_path)
     # remove text from image
     ImageTextDetector = ImageTextDetector()
@@ -490,7 +669,7 @@ if __name__ == "__main__":
     ImageProcessor = ImageProcessor(debug=False)
     # write copy
     final_img = ImageProcessor.write_ad_copy(
-        "buy big car", no_text_img, max_zero_percentage=0.0, aspect_ratio_threshold=3, split_lines=False)
+        "buy a very nice beautiful big car", no_text_img, max_zero_percentage=0.0, aspect_ratio_threshold=3, split_lines=True, center_align_rows=True, padding=0.90)
 
     # show the image and wait for a keypress
     cv2.imshow("final image", final_img)
