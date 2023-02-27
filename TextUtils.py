@@ -13,6 +13,7 @@
 
 # Add documentation: The function should include proper documentation, including a description of the function's purpose, its input parameters, its output, and any exceptions it might raise.
 
+from collections import OrderedDict
 import matplotlib.pyplot as plt
 import math
 import keras_ocr
@@ -22,6 +23,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import torch
 from shapely.geometry import Polygon
+from typing import List
 
 
 class ImageTextDetector:
@@ -121,6 +123,18 @@ class ImageTextDetector:
         return img
 
 
+class TextLine:
+    def __init__(self, text: str, type: str, font: ImageFont, font_name: str, font_size: int, color: str, x1: int, y1: int):
+        self.text = text
+        self.type = type
+        self.font = font
+        self.font_name = font_name
+        self.font_size = font_size
+        self.color = color
+        self.x1 = x1
+        self.y1 = y1
+
+
 class ImageProcessor:
 
     # load YOLO5 model in init
@@ -171,27 +185,34 @@ class ImageProcessor:
         text = text.upper()  # Convert the text to uppercase
         font_name = "arial.ttf"
         font_size = 1
-        isBold = True
+        font_line_0 = ImageFont.truetype(font_name, font_size)
+        font_line_1 = ImageFont.truetype(font_name, font_size)
+        font_size_line_0 = 1
+        font_size_line_1 = 1
         font = ImageFont.truetype(font_name, font_size)
+
+        # create lines structure where each line has: text, font, font_size, color, starting x, starting y
+        lines: OrderedDict[int, TextLine] = OrderedDict()
 
         # Calculate the maximum font size for single line text
         if not split_lines:
             while font.getlength(text) < padding * width and font.getbbox(text)[3] - font.getbbox(text)[1] < padding * height:
                 font_size += 1
                 font = ImageFont.truetype(font_name, font_size)
+                # add line to lines
+                lines[0] = TextLine(text, "single_line",
+                                    font_name, font_size, color, x1, y1)
 
         # First we split the text to two lines, cutting it in the middle as much as possible but ONLY on words
-        lines = []
         if split_lines:
             words = text.split()
             if len(words) <= 1:
-                lines = [text]
+                lines[0] = TextLine(
+                    text=line_1, type="line_1",
+                    font=ImageFont.truetype(font_name, 1),
+                    font_name=font_name, font_size=1, color=color, x1=0, y1=0)
             else:
-                lines = []
-                line_1 = ""
-                lines_2 = ""
                 # find the middle word of the text
-                middle_word = words[len(words)//2]
                 line_1 = " ".join(words[:len(words)//2 + 1])
                 line_2 = " ".join(words[len(words)//2 + 1:])
                 # check if length of line_2 is greater than line_1, and if so, remove the middle word from line_1 and add it to line_2
@@ -199,67 +220,150 @@ class ImageProcessor:
                 if len(line_2) > len(line_1):
                     line_1 = " ".join(words[:len(words)//2])
                     line_2 = " ".join(words[len(words)//2:])
-                lines.append(line_1)
-                lines.append(line_2)
+                lines[0] = TextLine(
+                    text=line_1, type="line_1",
+                    font=ImageFont.truetype(font_name, 1),
+                    font_name=font_name, font_size=1, color=color, x1=0, y1=0)
+                lines[1] = TextLine(
+                    text=line_2, type="line_2",
+                    font=ImageFont.truetype(font_name, 1),
+                    font_name=font_name, font_size=1, color=color, x1=0, y1=0)
 
-        # Next we calculate the font size for each line
-        font_size_multi_line = 1
-        font_multi_line = ImageFont.truetype(font_name, font_size_multi_line)
-        while font_multi_line.getlength(lines[0]) < padding * width and font_multi_line.getlength(lines[0] + " ") < padding * width:
-            font_size_multi_line += 1
-            font_multi_line = ImageFont.truetype(
-                font_name, font_size_multi_line)
+        # Next we calculate final parameters for every text line
+        for key, line in lines.items():
+            # first, calculate the font size for the line
+            font_size = 1
+            font = ImageFont.truetype(line.font_name, line.font_size)
+            while font.getlength(line.text) < padding * width and font.getbbox(line.text)[3] - font.getbbox(line.text)[1] < padding * height:
+                font_size += 1
+                font = ImageFont.truetype(line.font_name, font_size)
+                # update font size of line
+                line.font_size = font_size
 
-        # Calculate the coordinates of the top-left corner of the text
-        if centered:
-            x = x1 + (width - font.getbbox(lines[0])
-                      [2] + font.getbbox(lines[0])[0]) / 2
-            y = y1 + (height - font_size * len(lines)) / 2
-        else:
-            x = x1 + (1-padding)*0.5 * width
-            y = y1 + (1-padding)*0.5 * height
+            # Then with the font size we calculate the coordinates of the top-left corner of the text
+            if centered:
+                line.x1 = x1 + (width - font.getbbox(line.text)
+                                [2] + font.getbbox(line.text)[0]) / 2
+                line.y1 = y1 + (height - line.font_size * len(lines)) / 2
+            else:
+                line.x1 = x1 + (1-padding)*0.5 * width
+                line.y1 = y1 + (1-padding)*0.5 * height
 
-        # Set font color
-        color_main = color
-        color_second = (200, 200, 200)
-        print(lines)
-        print(len(lines))
-        # print coordinates
-        print(f"Coordinates: {x1}, {y1}, {x2}, {y2}")
-        if center_align_rows:
-            # Calculate the total height of the text
-            total_text_height = font_size * len(lines)
 
-            # Calculate the total padding (i.e., the space between the top and bottom of the bounding box and the top and bottom of the text)
-            total_padding = height - total_text_height
+        # if center_align_rows:
+        #     # Calculate the total height of the text
+        #     total_text_height = font_size_line_0 * len(lines)
 
-            # Calculate the y-coordinate of the first line based on the total padding
-            y = y1 + total_padding / 2
+        #     # Calculate the total padding (i.e., the space between the top and bottom of the bounding box and the top and bottom of the text)
+        #     total_padding = height - total_text_height
 
-            # Center-align each line of text with respect to the bounding box
-            for line in lines:
-                x = x1 + (width - font.getlength(line)) / 2
-                draw.text((x, y), line, font=font, fill=color)
-                # print: drew text at (x, y). here's the content: line
-                print("Text drawn at ({}, {}). Text = {}".format(x, y, line))
-                if self.debug == True:
-                    print("Text drawn at ({}, {}). Text = {}".format(x, y, line))
-                y += font_size
+        #     # Calculate the y-coordinate of the first line based on the total padding
+        #     y = y1 + total_padding / 2
 
-        if not center_align_rows:
-            # draw with left align
-            # Draw the text on the image
-            for i, line in enumerate(lines):
-                if i == 0:
-                    draw.text((x, y), line.upper(), font=font, fill=color_main)
+        #     # Center-align each line of text with respect to the bounding box
+        #     # check if line 0 exists and is not empty
+        #     if lines[0] != "":
+        #         x = x1 + (width - font_line_0.getlength(lines[0])) / 2
+        #         draw.text((x, y), lines[0], font=font_line_0, fill=color)
+
+            # Next we adjust for center alignment of rows, if needed
+            if center_align_rows:
+                if key == 0:
+                    line.y1 = y1 + (height - line.font_size *
+                                    (len(lines) + 1)) / 2
                 else:
-                    draw.text((x, y), line.upper(),
-                              font=font, fill=color_second)
-                if self.debug == True:
-                    print("Text drawn at ({}, {}). Text = {}".format(x, y, line))
-                    # font size print 
-                    print("Text font size: {}".format(font_size))
-                y += font_size
+                    line.y1 = lines[key - 1].y1 + lines[key - 1].font_size
+
+        # Finally, we draw the text on the image for every line and add debug info if needed.
+
+        for key, line in lines.items():
+            # draw the text
+            draw.text((line.x1, line.y1), line.text, fill=line.color, font=ImageFont.truetype(
+                line.font_name, line.font_size))
+            # if debug true, draw a red rectangle around the text
+            if self.debug:
+                draw.rectangle(((line.x1, line.y1), (line.x1 + font.getbbox(
+                    line.text)[2] - font.getbbox(line.text)[0], line.y1 + line.font_size)), outline="red")
+                # paint the full rectangle with a red color
+                draw.rectangle(((line.x1, line.y1), (line.x1 + font.getbbox(
+                    line.text)[2] - font.getbbox(line.text)[0], line.y1 + line.font_size)), fill="red")
+                # print coordinates
+                print(
+                    f"Coordinates: {line.x1}, {line.y1}, {line.x1 + font.getbbox(line.text)[2] - font.getbbox(line.text)[0]}, {line.y1 + line.font_size}")
+
+        # font_size_line_0 = 1
+        # font_line_0 = ImageFont.truetype(font_name, font_size_line_0)
+        # while font_line_0.getlength(lines[0]) < padding * width and font_line_0.getlength(lines[0] + " ") < padding * width:
+        #     font_size_line_0 += 1
+        #     font_line_0 = ImageFont.truetype(
+        #         font_name, font_size_line_0)
+
+        # # Next, line 1:
+        # font_size_line_1 = 1
+        # font_line_1 = ImageFont.truetype(font_name, font_size_line_1)
+        # while font_line_1.getlength(lines[1]) < padding * width and font_line_1.getlength(lines[1] + " ") < padding * width:
+        #     font_size_line_1 += 1
+        #     font_line_1 = ImageFont.truetype(
+        #         font_name, font_size_line_1)
+
+        # # Set font color
+        # color_main = color
+        # color_second = (200, 200, 200)
+        # if center_align_rows:
+        #     # Calculate the total height of the text
+        #     total_text_height = font_size_line_0 * len(lines)
+
+        #     # Calculate the total padding (i.e., the space between the top and bottom of the bounding box and the top and bottom of the text)
+        #     total_padding = height - total_text_height
+
+        #     # Calculate the y-coordinate of the first line based on the total padding
+        #     y = y1 + total_padding / 2
+
+        #     # Center-align each line of text with respect to the bounding box
+        #     # check if line 0 exists and is not empty
+        #     if lines[0] != "":
+        #         x = x1 + (width - font_line_0.getlength(lines[0])) / 2
+        #         draw.text((x, y), lines[0], font=font_line_0, fill=color)
+        #         # print: drew text at (x, y). here's the content: line
+        #         print("Text drawn at ({}, {}). Text = {}".format(
+        #             x, y, lines[0]))
+        #         # draw a bounding box around the text in black
+        #         # draw.rectangle(
+        #         #     ((x, y), (x + font.getlength(lines[0]), y + font_size_line_0)), outline="black")
+        #         if self.debug == True:
+        #             print("Text drawn at ({}, {}). Text = {}".format(
+        #                 x, y, lines[0]))
+        #         y += font_size_line_0
+
+        #     if lines[1] != "":
+        #         x = x1 + (width - font_line_1.getlength(lines[1])) / 2
+        #         draw.text((x, y), lines[1], font=font_line_1, fill=color)
+        #         # print: drew text at (x, y). here's the content: line
+        #         print("Text drawn at ({}, {}). Text = {}".format(
+        #             x, y, lines[1]))
+        #         # draw a bounding box around the text in black
+        #         # draw.rectangle(
+        #         #     ((x, y), (x + font_line_1.getlength(lines[1]), y + font_size_line_1)), outline="black")
+        #         if self.debug == True:
+        #             print("Text drawn at ({}, {}). Text = {}".format(
+        #                 x, y, lines[1]))
+        #         y += font_size_line_1
+
+        # ######## THIS IS BROKEN ADJUST THE FONT PARAMETERS ############
+        # if not center_align_rows:
+        #     # draw with left align
+        #     # Draw the text on the image
+        #     for i, line in enumerate(lines):
+        #         if i == 0:
+        #             draw.text((x, y), line.upper(), font=font, fill=color_main)
+        #         else:
+        #             draw.text((x, y), line.upper(),
+        #                       font=font, fill=color_second)
+        #         if self.debug == True:
+        #             print("Text drawn at ({}, {}). Text = {}".format(x, y, line))
+        #             # font size print
+        #             print("Text font size: {}".format(font_size))
+        #         y += font_size
 
         # Print where you drew the text, including text font size and width and height
         if self.debug == True:
@@ -661,7 +765,7 @@ class ImageProcessor:
 
 
 if __name__ == "__main__":
-    img_path = '1.jpg'
+    img_path = '4.jpg'
     img = cv2.imread(img_path)
     # remove text from image
     ImageTextDetector = ImageTextDetector()
